@@ -15,6 +15,20 @@ OdysseusBridge is built on open standards — these are the things it actually u
   standard MCP-over-HTTP / JSON-RPC, per-session token auth, and a guarded helper toolkit. Thanks for the
   groundwork.
 
+## Where each part comes from
+Honest provenance — every piece traced to its origin:
+- **The plugin** (in-editor HTTP server, JSON parsing, editor Python execution) — Unreal's own public
+  modules: `FHttpServerModule`, `Json`, `IPythonScriptPlugin`, the plugin system (**Epic Games**).
+- **The wire format** — the open **Model Context Protocol** (Anthropic) over **JSON-RPC 2.0**, with
+  **RFC 8259** string escaping.
+- **The security model** (loopback-only + per-session bearer token) — the standard local-MCP safety pattern.
+- **`unreal_helpers.py`** — thin guarded wrappers over the public `unreal` editor API.
+- **`UE_ENGINEER.md`** — distilled from our own **UE 5.7 state-of-the-art game-developer discipline**
+  (right-system selection, shippability tiers, data-driven design) + the recon → act → read-back → verify
+  operating loop. Curated, not generated.
+- **The overall pattern** — an in-editor plugin acting as an MCP server — was pioneered by the projects
+  under *Improves on* below; this is an independent, standards-based take on it.
+
 ## Thanks to
 Built *with* AI, not just by a human — credit where it's due:
 - **Claude** (Anthropic) — paired on every line of this.

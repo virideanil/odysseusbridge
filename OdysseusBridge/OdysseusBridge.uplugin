@@ -1,9 +1,9 @@
 {
 	"FileVersion": 3,
-	"Version": 1,
-	"VersionName": "0.1.0",
+	"Version": 2,
+	"VersionName": "0.2.0",
 	"FriendlyName": "Odysseus Bridge",
-	"Description": "Native in-editor MCP server (JSON-RPC 2.0 over HTTP) exposing live Unreal Editor tools to any MCP client (Odysseus, Claude Code, ...). Loopback-only + per-session token.",
+	"Description": "In-editor MCP server (JSON-RPC 2.0 over HTTP) that lets Odysseus drive the live Unreal Editor. Loopback-only + per-session token.",
 	"Category": "Editor",
 	"CreatedBy": "Anil Berk Yesil",
 	"EngineVersion": "5.7.0",

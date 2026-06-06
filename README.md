@@ -1,93 +1,90 @@
-# OdysseusBridge — the Unreal Engine 5 plugin that lets Odysseus drive the live editor
+<p align="center">
+  <img src="docs/banner.png" alt="OdysseusBridge — Odysseus × Unreal Engine 5" width="880">
+</p>
 
-> **Open‑source (MIT) · drop‑in · no fork, no service.** The Unreal Engine plugin for **Odysseus** —
-> it hands Odysseus's agent the **live** UE5 editor as a toolset. (It speaks standard MCP, so any MCP
-> client *can* connect — but it's built for Odysseus.) Clone → build → connect.
+# OdysseusBridge — an Unreal Engine 5.7 plugin for Odysseus
 
-A tiny **MCP server that runs inside the UE 5.7 editor**. Install it in your UE project, point
-**Odysseus** at it, and Odysseus's agent can read the open project and run editor Python against the
-live `unreal` API.
+**What it is.** A small Unreal Engine 5.7 *editor* plugin that runs an MCP server **inside the live
+editor**. Once it's installed and the editor is open, **Odysseus** can read your project and make real
+changes to it by talking to the editor over a local API — no copying code back and forth, no recompiling
+between steps. In short: it's the *hands* that let Odysseus actually work inside Unreal, in your own
+`.uproject`.
+
+**Why it exists.** An AI agent can happily *write* Unreal Python, but on its own it can't *run* that
+Python in your open editor — so nothing actually happens to your project. OdysseusBridge closes that gap
+with one local, authenticated channel: the agent sends a command, the editor runs it on the spot and
+sends back the real result (or the real error). It speaks standard MCP, so it isn't tied to one client —
+but it's built for Odysseus.
 
 ```
-Odysseus ──MCP / HTTP──▶ OdysseusBridge (in-editor) ──▶ UE editor · Python API
+Odysseus ──MCP / JSON-RPC over HTTP──▶ OdysseusBridge (inside the editor) ──▶ UE editor · `unreal` Python API
+         ◀────────── result / log / traceback ──────────
 ```
 
-## Tools
-The server exposes **eight** native MCP tools (they show up in `tools/list`):
+## How it works (the flow, end to end)
+1. **Load.** The plugin is an *Editor* module. When you open your project, Unreal loads it.
+2. **Listen.** On startup it opens an HTTP server on **`127.0.0.1:8762`** using Unreal's own built-in
+   `FHttpServerModule` (nothing external), and mints a random **per-session token**, written to
+   `<YourProject>/Saved/OdysseusBridge/auth_token`.
+3. **Speak MCP.** Odysseus connects and talks the Model Context Protocol over JSON-RPC 2.0 (`POST /mcp`):
+   `initialize` → `tools/list` → `tools/call`. A second route, `GET /odysseus/health`, is a liveness ping.
+4. **Gate every call.** A request is served only if it comes from this machine (`127.0.0.1`/`::1`) **and**
+   carries the bearer token. Anything else gets `403` (off-box) or `401` (no/wrong token).
+5. **Run on the right thread.** `tools/call` executes on the editor's **game thread** — which is where
+   Unreal Python must run — via `IPythonScriptPlugin`. The bridge captures stdout + the result/traceback
+   and returns it as MCP content. So when Odysseus spawns an actor, an actor really appears in your level.
 
-- **`project_info`** — name, absolute directory, and engine version of the open project. *(no args)*
-- **`run_python`** — runs Python inside the live editor (the `unreal` module is in scope) and returns
-  the captured log + result/traceback. *(arg: `script`)*
-- **`list_assets`** — asset paths under a content folder. *(arg: `folder`, default `/Game`)*
-- **`spawn_actor`** — spawn N `StaticMeshActor`s with a mesh, in a row. *(args: `mesh_path`, `count`)*
-- **`datatable_rows`** — list a DataTable's row names. *(arg: `asset_path`)*
-- **`create_blueprint`** — create a Blueprint asset. *(args: `name`, `path`, `parent_class`)*
-- **`create_material`** — create a Material asset. *(args: `name`, `path`)*
-- **`import_asset`** — import a file (FBX/image/…) into the content browser. *(args: `source`, `destination`)*
+## What Odysseus can reach (the tools)
+The plugin exposes **eight native MCP tools**. They show up in `tools/list`, so the agent discovers them
+automatically:
 
-`run_python` is the workhorse: the **entire `unreal` editor Python API is reachable through it** — but
-*you* (the agent) write the Python. There is no separate "create blueprint" or "import asset" tool;
-those are things you **script**.
+| Tool | What it does | How |
+|---|---|---|
+| `project_info` | project name, directory, engine version | direct, no args |
+| `run_python` | **the workhorse** — runs any Python in the live editor | the full `unreal` API is in scope; returns log + result/traceback |
+| `list_assets` | asset paths under a content folder | `EditorAssetLibrary.list_assets` |
+| `spawn_actor` | spawns N `StaticMeshActor`s with a mesh | `EditorActorSubsystem` |
+| `datatable_rows` | a DataTable's row names | `DataTableFunctionLibrary` |
+| `create_blueprint` | creates a Blueprint asset (given a parent class) | `BlueprintFactory` + `AssetTools` |
+| `create_material` | creates a Material asset | `MaterialFactoryNew` + `AssetTools` |
+| `import_asset` | imports a file (FBX / image / …) into the content browser | `AssetImportTask` |
 
-~450 lines of C++ (a 415‑line `.cpp` + a 39‑line header), MIT — small and self‑contained (public Epic APIs + the open MCP spec; see
-`CREDITS.md`), **build‑verify in your editor**.
+**Why only eight native ones?** Because `run_python` already reaches the *entire* editor Python API —
+editing materials, running commandlets, building levels, anything scriptable. The seven typed tools are
+just the common moves wrapped as one-call shortcuts (they each compose a small `unreal` Python snippet and
+run it through the same executor). You're never limited to the eight.
 
-## What it can really do — the inventory, by domain
-To make `run_python` reliable instead of guesswork, **`unreal_helpers.py`** ships **13 ready functions**,
-each guarded (a bad call returns `ERR: …`, never a crash). Drop it into your project's `Content/Python`
-(UE auto‑imports it) and call them through `run_python`:
-
-```python
-import unreal_helpers as u
-print(u.project()); print(u.spawn_static('/Engine/BasicShapes/Cube.Cube', 8))
+## Where everything lives (file map)
 ```
+OdysseusBridge/                         the UE plugin  → copy into <YourProject>/Plugins/
+  OdysseusBridge.uplugin                plugin manifest (Editor module, Win64, depends on PythonScriptPlugin)
+  Source/OdysseusBridge/
+    Public/OdysseusBridge.h             the module class
+    Private/OdysseusBridge.cpp          the whole server: endpoint, auth, JSON-RPC dispatch, the 8 tools
+    OdysseusBridge.Build.cs             engine module deps (Core, CoreUObject, Engine, HTTPServer, Json, PythonScriptPlugin, Sockets)
+scripts/connect_unreal.py               run from your Odysseus repo → registers the bridge as an MCP server
+unreal_helpers.py                       optional guarded Python wrappers → drop in <YourProject>/Content/Python/
+smoke_test.py                           end-to-end check (health → initialize → tools → run_python)
+UE_ENGINEER.md                          optional agent prompt that keeps the agent disciplined on the editor
+CREDITS.md · CHANGELOG.md · SETUP.md · LICENSE
+```
+At runtime the per-session token lives at `<YourProject>/Saved/OdysseusBridge/auth_token` — it's local;
+`Saved/` is already in UE's `.gitignore`, so it never leaves your machine.
 
-This is the honest, tested surface:
+## Install — drop-in (Odysseus, 3 steps)
+1. **Drop** the `OdysseusBridge/` folder into your UE project's `Plugins/` and open the editor. It builds
+   on first open (because the source is there), starts the server, and writes the token. *Why open it?* —
+   the bridge only lives while the editor is running; that's also why it can't touch your project when
+   you're away.
+2. **Register** it in Odysseus (run from your Odysseus repo, which has the DB layer):
+   ```bash
+   python scripts/connect_unreal.py --token-file "<YourProject>/Saved/OdysseusBridge/auth_token"
+   ```
+   This writes one enabled `McpServer` row (`id=odybridge`, the URL + token) so Odysseus auto-connects.
+3. **Restart Odysseus.** It connects on startup; the eight tools appear to the agent as `mcp__odybridge__*`.
 
-**Recon — read the editor**
-- `project()` — project file, current level, live actor count
-- `actors(limit=40)` — list level actors as `label [Class]`
-- `find_assets(folder="/Game", recursive=True, limit=60)` — list asset paths under a content folder
-
-**Scene — build / edit actors**
-- `spawn_static(mesh_path, n=1, …)` — spawn N `StaticMeshActor`s in a grid
-- `spawn_skeletal(mesh_path, n=1, …)` — spawn N `SkeletalMeshActor`s in a grid
-- `scale_actor(label, s)` — uniform scale, reads the new value back
-- `move_actor(label, x, y, z)` — set world location, reads it back
-- `clear(prefix)` — destroy every actor whose label starts with `prefix`
-
-**Look**
-- `screenshot(name, width=1600, height=900)` — high‑res viewport shot → `Saved/Screenshots`
-
-**Data**
-- `datatable_rows(asset_path, limit=30)` — list a DataTable's row names *(read‑only)*
-
-**Persist / level**
-- `save_all()` — save every dirty package
-- `open_level(path)` — open a level / map
-
-**Util**
-- `toast(msg)` — on‑screen + log message in the editor
-
-Anything beyond these 13 — creating Blueprints, editing materials, importing FBX, running commandlets —
-is **reachable but not pre‑wired**: you write the `unreal` Python for it through `run_python`. The helpers
-are the proven shortcuts, not the ceiling.
-
-## Footprint
-**~454 lines of C++** — no external runtime, no vendored libraries; it uses only engine modules already in your editor.
-
-| File | Lines | What it holds |
-|---|---:|---|
-| `OdysseusBridge.cpp` | 415 | the server — loopback + token gate, JSON-RPC dispatch, the shared `RunEditorPython` exec, and all 8 tool handlers |
-| `OdysseusBridge.h` | 39 | the module class + members |
-| `OdysseusBridge.Build.cs` | 24 | the 7 engine module dependencies |
-
-Inside the `.cpp`, roughly a third is reusable helpers (port pick, RFC‑8259 escaping, auth, JSON), a third is
-the HTTP lifecycle + request dispatch, and a third is the 8 tools — each a thin wrapper that builds `unreal`
-Python and runs it through the one shared exec path.
-
-## Install (any UE 5.7 project)
-1. Copy `OdysseusBridge/` into `<YourProject>/Plugins/` → `<YourProject>/Plugins/OdysseusBridge/`.
+## Install — manual (any UE 5.7 project)
+1. Copy `OdysseusBridge/` into `<YourProject>/Plugins/`.
 2. Enable it in `<YourProject>.uproject`:
    ```json
    "Plugins": [ { "Name": "OdysseusBridge", "Enabled": true } ]
@@ -97,107 +94,75 @@ Python and runs it through the one shared exec path.
    & "<UE>\Engine\Build\BatchFiles\Build.bat" <Project>Editor Win64 Development `
      -Project="<...>\<YourProject>.uproject" -WaitMutex
    ```
-4. *(optional)* copy `unreal_helpers.py` into `<YourProject>/Content/Python/` for the 13 helpers above.
+4. *(optional)* copy `unreal_helpers.py` into `<YourProject>/Content/Python/` (UE auto-imports it) for the
+   guarded helper wrappers — each returns `ERR: …` instead of throwing, so a wrong API name can't crash a run.
 
-## Run
-Open the editor; the bridge starts and logs
-`OdysseusBridge MCP listening at http://127.0.0.1:8762/mcp`.
-Set `ODYSSEUS_BRIDGE_PORT` to pin a different port. It serves only while the editor is open.
-
+## Run & connect (any MCP client)
+Open the editor; it logs `OdysseusBridge MCP listening at http://127.0.0.1:8762/mcp`. Set
+`ODYSSEUS_BRIDGE_PORT` to pin a different port.
 ```
-MCP    : http://127.0.0.1:<port>/mcp   (JSON-RPC 2.0, streamable HTTP, multi-client)
+MCP    : http://127.0.0.1:<port>/mcp            (JSON-RPC 2.0, streamable HTTP, multi-client)
 health : http://127.0.0.1:<port>/odysseus/health
+auth   : Authorization: Bearer <token from <Project>/Saved/OdysseusBridge/auth_token>
 ```
 
-## Connect an agent
-- **Odysseus:** `python scripts/connect_unreal.py --token-file "<YourProject>/Saved/OdysseusBridge/auth_token"`
-  (or Settings → MCP → Add → HTTP). Odysseus's agent then drives the **live** UE editor via `mcp__odybridge__*` — that one step is what turns Odysseus into a UE‑driving agent.
-- **Claude Code:** `.mcp.json` at your workspace root:
-  ```json
-  { "mcpServers": { "ody-bridge": {
-    "type": "http",
-    "url": "http://127.0.0.1:8762/mcp",
-    "headers": { "Authorization": "Bearer <token>" }
-  } } }
-  ```
-- **Any MCP HTTP client:** point it at the URL + the bearer token.
+## Security — opt-in, and why it's safe
+- **Loopback-only.** Requests from anything other than `127.0.0.1` / `::1` are refused (`403`). The
+  endpoint is unreachable from other machines, so it can't be hit over a network.
+- **Per-session token.** A fresh secret is generated each time the editor starts and written locally;
+  every `/mcp` call must present it or it's `401`. A new editor session ⇒ a new token.
+- **Game-thread only.** Python runs on the game thread in-process — no shelling out, no extra runtime.
+- **Inert by default.** Nothing runs unless you install + enable the plugin *and* open the editor. Keep
+  your project under version control so every change an agent makes stays reviewable in your diff.
 
-## Using it — a typical agent loop
-The reliable pattern (and what an agent *skill* should encode): **recon → one small action → read it back → verify.**
-```python
-project_info()                                   # confirm you're on the real editor
-run_python("import unreal_helpers as u; print(u.spawn_static('/Engine/BasicShapes/Cube.Cube', 8))")
-run_python("import unreal_helpers as u; print(u.actors())")   # read it back — never assume
-```
-- **One action at a time, printed and verified** — not ten things in one script you can't debug.
-- The guarded helper returns `ERR: …` on a bad call, so the agent self‑corrects instead of crashing.
-- **Make it a skill.** Encode the rule — *call `project_info` first, act in small steps, read back each change, report one PASS/FAIL* — and even a small local model becomes a reliable editor operator.
-
-## Recommended: the UE Engineer skill
-The repo ships **[`UE_ENGINEER.md`](UE_ENGINEER.md)** — a small, curated **agent skill** you load as your
-agent's system prompt *before* it touches the editor. It's the difference between a reliable operator and a
-guesser, and it's the fastest way to get value out of this bridge.
-
-**Why it matters.** `run_python` is unlimited power — which is exactly how an agent makes a mess: ten
-half-checked actions in one script, no idea what actually changed. The skill imposes the discipline a
-senior UE engineer actually works by: **recon → one small action → read it back → verify → one PASS/FAIL
-verdict.** With it loaded, even a small local model becomes a dependable editor operator.
-
-**How it was curated** — distilled from UE 5.7 state-of-the-art practice, not generic prompt fluff:
-- **Data-driven by default** — new stats / abilities / economy go in DataTables, Structs, DataAssets, never hardcoded.
-- **Shippability awareness** — it *flags* Experimental tech (Mass net replication, Nanite skeletal/foliage, Mover) instead of silently shipping on it.
-- **Stability habits** — keep actions small (they run on the game thread), prefer the guarded helpers, save only when you mean to.
-
-**How it drives this bridge.** It maps that loop onto the exact surface: call `project_info` first to
-confirm the real editor, reach for the **8 native tools** for the common moves, drop to `run_python` for
-everything else — with copy-paste recipes for spawning, asset discovery, Blueprint/Material creation, and
-reading every change back. It's the on-ramp that turns OdysseusBridge from *"an API"* into *"an agent that
-ships work."*
-
-## Security (opt-in + locked down)
-- **Loopback-only** — requests from anything other than `127.0.0.1` / `::1` are rejected (403).
-- **Per-session bearer token** — generated at startup, written to
-  `<Project>/Saved/OdysseusBridge/auth_token` (local only); every `/mcp` call must send
-  `Authorization: Bearer <token>` or it returns 401.
-- Inert unless you install + enable the plugin. Keep your project under version control so edits stay reviewable.
-
-## Verify
+## Verify it works
 ```bash
 python smoke_test.py 8762 <token>
 # health -> initialize -> tools/list -> project_info -> run_python
 ```
 
-## Add a tool
-In `OdysseusBridge/Source/OdysseusBridge/Private/OdysseusBridge.cpp`:
-1. add the schema to `HandleToolsList()` (name + description + inputSchema),
-2. add an `else if (Tool == …)` branch in `HandleToolsCall()`,
-3. rebuild. New module deps → `OdysseusBridge.Build.cs`; new plugin deps → `OdysseusBridge.uplugin`.
+## Extend it — add your own native tool
+Everything lives in `OdysseusBridge/Source/OdysseusBridge/Private/OdysseusBridge.cpp`:
+1. add the tool's schema (name + description + inputSchema) to `HandleToolsList()`,
+2. add an `else if (Tool == "your_tool")` branch in `HandleToolsCall()` — build a small `unreal` Python
+   string and run it through the shared `RunEditorPython()` helper,
+3. rebuild. New engine module? add it to `OdysseusBridge.Build.cs`. New plugin dep? `OdysseusBridge.uplugin`.
 
-HTTP handlers run on the game thread, so editor/Python calls are safe.
+HTTP handlers run on the game thread, so editor/Python calls inside a tool are safe.
+
+## The UE Engineer skill — its tale
+`UE_ENGINEER.md` is not filler — it's the *distilled* core of a much larger body of work. It was curated
+down from a full **UE 5.7 state-of-the-art game-developer discipline**: the practice that knows *which*
+Unreal system fits a problem (Actors vs **Mass/ECS** for crowds, **GAS** for abilities, **StateTree/EQS**
+for AI, **Nanite/Lumen/Substrate** for rendering), knows each one's **shippability tier** (production vs
+beta vs experimental — so an agent never quietly builds on prototype tech), and **profiles before
+optimizing**. That whole body of engineering judgment was compressed into one agent prompt, together with
+the operating disciplines we use everywhere:
+
+- **the loop** — recon → one small action → read it back → verify → a single PASS/FAIL verdict;
+- **data-driven by default** — new stats / abilities / economy belong in DataTables, Structs, DataAssets, never hardcoded;
+- **honesty under pressure** — never claim a result you didn't actually get; flag Experimental tech instead of shipping on it.
+
+So loading it doesn't just give the agent a *tone* — it hands it the *practice* of a careful UE engineer.
+It's the difference between an agent that merely *can* call the tools and one that uses them *well*; with
+it loaded, even a small local model works in disciplined, verifiable steps instead of guessing.
+
+## Footprint
+~454 lines of C++ (~415-line `.cpp` + 39-line header) + a 24-line build file — **no external
+dependencies**, it uses only engine modules already present in your editor. Roughly a third of the `.cpp`
+is reusable helpers (port pick, RFC-8259 escaping, auth, JSON), a third is the HTTP lifecycle + request
+dispatch, and a third is the eight tools.
 
 ## Requirements
 - Unreal Engine 5.7 (Win64)
 - Visual Studio 2022 with the C++ game-dev workload (to compile the plugin)
+- See **`SETUP.md`** for the full build/connect/troubleshoot guide (incl. the .NET 4.8 Dev Pack gotcha).
 
-## Setup, verify, troubleshoot
-See **`SETUP.md`** — prerequisites (incl. the .NET 4.8 Dev Pack gotcha), build, connect, verify, and a troubleshooting table so it runs without surprises.
-
-## Built on appleweed/UnrealMCPBridge
-OdysseusBridge **improves on [appleweed/UnrealMCPBridge](https://github.com/appleweed/UnrealMCPBridge)** (MIT) —
-the project that pioneered the in‑editor plugin‑as‑MCP‑server for Unreal. It keeps that core idea and adds:
-- **Standard MCP over HTTP + JSON‑RPC 2.0** instead of a raw socket — works with any compliant MCP client.
-- **Security** — loopback‑only + a per‑session bearer token on every call.
-- **A guarded helper toolkit** (`unreal_helpers.py`, 13 functions) so the agent doesn't fumble the raw API.
-- **An Odysseus connector** + an optional **`UE_ENGINEER.md`** skill to drive it well.
-
-Thanks to appleweed for the groundwork.
-
-## Credits
-MIT — see `LICENSE`. Built on the **open** Model Context Protocol (Anthropic) and Unreal's **public** plugin / HTTP / Python APIs (Epic Games) — see **`CREDITS.md`** for exactly what it uses.
+## Built on
+MIT — see `LICENSE`. Built on the open **Model Context Protocol** (Anthropic) and Unreal's **public**
+plugin / HTTP / Python APIs (Epic Games), and improves on **[appleweed/UnrealMCPBridge](https://github.com/appleweed/UnrealMCPBridge)**
+(MIT) — a standards-based HTTP + JSON-RPC transport with token auth instead of a raw socket. Full
+attribution in **`CREDITS.md`**.
 
 ---
-thanks for everything — use it, fork it, make something good. 🤍
-
-© 2026 d/ay/eşil — Anıl
-
 <sub>Canım abim, Deniz'im adına / For my dear brother, my Deniz.</sub>

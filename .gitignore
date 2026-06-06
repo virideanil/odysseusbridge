@@ -6,3 +6,8 @@ __pycache__/
 Binaries/
 Intermediate/
 *.pdb
+
+# local release automation (never publish)
+_release_push*.bat
+_push_result.log
+_push_020.log

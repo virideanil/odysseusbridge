@@ -2,6 +2,12 @@
 
 Notable changes to OdysseusBridge. Loosely follows Keep a Changelog.
 
+## 0.2.0 — 2026-06-06
+Reframed **Odysseus-first**: the README and plugin description now lead with Odysseus as the agent that
+drives the editor, and promotional phrasing was removed from the docs (kept factual). No behaviour change
+— same eight native tools, ~454 lines of C++, no external deps. *(Planned: data-driven tool dispatch to
+trim the C++ further.)*
+
 ## 0.1.0 — 2026-06-05
 First public release — a minimal in-editor MCP server for Unreal Engine 5.7.
 
